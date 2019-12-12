@@ -1,32 +1,30 @@
-use std::collections::hash_map::DefaultHasher;
-use std::{cmp::Ord, hash::{Hash, Hasher}};
 use splay::SplayMap;
+use std::collections::hash_map::DefaultHasher;
+use std::{
+    cmp::Ord,
+    hash::{Hash, Hasher},
+};
 
-const LOAD_FACTOR_HIGH: f32 = 0.75;
-const LOAD_FACTOR_LOW: f32 = 0.5;
+const LOAD_FACTOR_HIGH: f32 = 0.75; //grow with this
+const LOAD_FACTOR_LOW: f32 = 0.25; //shrink with this
 const INITIAL_SIZE: usize = 16;
 
+#[derive(Default)]
 pub struct SplashMap<K, V>
 where
-    K: Ord
+    K: Ord,
 {
     buckets: Vec<Option<SplayMap<K, V>>>,
     num_entries: usize,
 }
 
-fn hash_anything<K: Hash>(key: &K) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    key.hash(&mut hasher);
-    hasher.finish()
-}
-
 impl<K, V> SplashMap<K, V>
 where
-    K: Hash + Ord
+    K: Hash + Ord,
 {
-    fn new() -> SplashMap<K, V> {
-        let mut buckets = Vec::with_capacity(INITIAL_SIZE);
-        for i in 0..INITIAL_SIZE {
+    pub fn new() -> SplashMap<K, V> {
+        let mut buckets = Vec::<Option<SplayMap<K, V>>>::with_capacity(INITIAL_SIZE);
+        for _ in 0..INITIAL_SIZE {
             buckets.push(None);
         }
         SplashMap {
@@ -35,22 +33,43 @@ where
         }
     }
 
-    /// double the size of the buckets vector and recompute hashes within
-    fn grow_and_rehash(&mut self) {
+    pub fn hash_index(&self, key: &K) -> usize {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        (hasher.finish() % (self.buckets.len() as u64)) as usize
     }
 
-    fn insert(&mut self, k: K, v: V) {
+    /// double the size of the buckets vector and recompute hashes within
+    pub fn resize_and_rehash(&mut self, new_size: usize) {
+        self.buckets.resize_with(new_size, || None);
+        let mut displaced_nodes = Vec::<SplayMap<K, V>>::new();
+        for i in 0..self.buckets.len() {
+            if self.buckets[i].is_some() {
+                // occupied chain
+                let old = self.buckets.swap_remove(i).unwrap();
+                displaced_nodes.push(old);
+                self.buckets[i] = None;
+            }
+        }
+
+        for i in 0..displaced_nodes.len() {
+            let displaced_node = displaced_nodes.swap_remove(i);
+            for pair in displaced_node.into_iter() {
+                self.insert(pair.0, pair.1);
+            }
+        }
+    }
+
+    pub fn insert(&mut self, k: K, v: V) {
         self.num_entries += 1;
 
         let real_load_factor = self.num_entries as f32 / self.buckets.len() as f32;
 
         if real_load_factor >= LOAD_FACTOR_HIGH {
-            self.grow_and_rehash();
-        } else if real_load_factor <= LOAD_FACTOR_LOW {
-            self.shrink_and_rehash();
+            self.resize_and_rehash(2 * self.buckets.len());
         }
 
-        let idx = (hash_anything(&k) % (self.buckets.len() as u64)) as usize;
+        let idx = self.hash_index(&k);
         match self.buckets[idx] {
             None => {
                 let mut s = SplayMap::new();
@@ -63,13 +82,30 @@ where
         }
     }
 
-    fn get(&self, k: K) -> Option<&V> {
-        let idx = (hash_anything(&k) % (self.buckets.len() as u64)) as usize;
+    pub fn remove(&mut self, k: &K) -> Option<V> {
+        let idx = self.hash_index(k);
+        let mut ret: Option<V> = None;
+        match self.buckets[idx] {
+            None => return ret,
+            Some(ref mut x) => {
+                self.num_entries -= 1;
+                ret = x.remove(k);
+            }
+        }
+
+        let real_load_factor = self.num_entries as f32 / self.buckets.len() as f32;
+
+        if real_load_factor < LOAD_FACTOR_LOW {
+            self.resize_and_rehash(self.buckets.len() / 2);
+        }
+        ret
+    }
+
+    pub fn get(&self, k: K) -> Option<&V> {
+        let idx = self.hash_index(&k);
         match self.buckets[idx] {
             None => None,
-            Some(ref x) => {
-                x.get(&k)
-            }
+            Some(ref x) => x.get(&k),
         }
     }
 }
