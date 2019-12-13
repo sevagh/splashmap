@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use splashmap::map::SplashMap;
 use std::collections::hash_map::HashMap;
 use std::hash::{BuildHasher, Hasher};
@@ -12,7 +12,7 @@ impl CollisionHasher {
 }
 
 impl Hasher for CollisionHasher {
-    fn write(&mut self, bytes: &[u8]) {}
+    fn write(&mut self, _bytes: &[u8]) {}
 
     fn finish(&self) -> u64 {
         1337
@@ -35,29 +35,38 @@ impl BuildHasher for CollisionBuildHasher {
     }
 }
 
-fn hashmap_colliding_inserts(n: usize) {
-    let mut map = HashMap::with_hasher(CollisionBuildHasher::new());
-    for i in 0..n {
-        map.insert(i, i);
-    }
-}
+const NUM_ENTRIES: usize = 100000;
+const RETRIEVE_SUBSET: usize = 100;
 
 fn criterion_benchmark_hashmap(c: &mut Criterion) {
+    let mut map = HashMap::with_hasher(CollisionBuildHasher::new());
+    for i in 0..NUM_ENTRIES {
+        map.insert(i, i);
+    }
+
     c.bench_function("hashmap", |b| {
-        b.iter(|| hashmap_colliding_inserts(black_box(1000000)))
+        b.iter(|| {
+            // repeatedly get the same subset of keys
+            for i in (0..NUM_ENTRIES).step_by(RETRIEVE_SUBSET) {
+                assert_eq!(map.get(&i), Some(&i));
+            }
+        });
     });
 }
 
-fn splashmap_colliding_inserts(n: usize) {
+fn criterion_benchmark_splashmap(c: &mut Criterion) {
     let mut map = SplashMap::with_hasher(CollisionBuildHasher::new());
-    for i in 0..n {
+    for i in 0..NUM_ENTRIES {
         map.insert(i, i);
     }
-}
 
-fn criterion_benchmark_splashmap(c: &mut Criterion) {
     c.bench_function("splashmap", |b| {
-        b.iter(|| splashmap_colliding_inserts(black_box(1000000)))
+        b.iter(|| {
+            // repeatedly get the same subset of keys
+            for i in (0..NUM_ENTRIES).step_by(RETRIEVE_SUBSET) {
+                assert_eq!(map.get(&i), Some(&i));
+            }
+        });
     });
 }
 
@@ -66,5 +75,4 @@ criterion_group!(
     criterion_benchmark_hashmap,
     criterion_benchmark_splashmap
 );
-//criterion_group!(benches, criterion_benchmark_splashmap);
 criterion_main!(benches);
