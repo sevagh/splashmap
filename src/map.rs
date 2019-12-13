@@ -54,6 +54,10 @@ where
     K: Hash + Ord,
     S: BuildHasher,
 {
+    pub fn with_hasher(hash_builder: S) -> Self {
+        SplashMap::<K, V, S>::with_capacity_and_hasher(INITIAL_SIZE, hash_builder)
+    }
+
     pub fn with_capacity_and_hasher(capacity: usize, hash_builder: S) -> Self {
         let mut buckets = Vec::<Option<SplayMap<K, V>>>::with_capacity(capacity);
         for _ in 0..capacity {
@@ -68,7 +72,6 @@ where
 
     /// resize the buckets vector and recompute hashes within
     pub fn resize_and_rehash(&mut self, new_size: usize) {
-        self.buckets.resize_with(new_size, || None);
         let mut displaced_nodes = Vec::<SplayMap<K, V>>::new();
         for i in 0..self.buckets.len() {
             if self.buckets[i].is_some() {
@@ -78,6 +81,8 @@ where
                 displaced_nodes.push(old);
             }
         }
+
+        self.buckets.resize_with(new_size, || None);
 
         for d in displaced_nodes.drain(..) {
             // reinsert all the entries of the SplayMap
@@ -135,9 +140,7 @@ where
 
         let real_load_factor = self.num_entries as f32 / self.buckets.len() as f32;
 
-        println!("real load factor: {}", real_load_factor);
         if real_load_factor < LOAD_FACTOR_LOW {
-            println!("len buckets: {}", self.buckets.len());
             self.resize_and_rehash(self.buckets.len() / 2);
         }
         ret
@@ -222,9 +225,33 @@ mod tests {
     }
 
     #[test]
-    fn test_hash_anything() {
+    fn test_one_insert() {
         let mut m = SplashMap::new();
         m.insert("hello", "world");
-        println!("m get: {:#?}", m.get(&"hello"));
+        assert_eq!(m.get(&"hello"), Some(&"world"));
     }
+
+    #[test]
+    fn test_splashmap_memory() {
+        let mut map = SplashMap::<i32, i32>::new();
+        for i in 0..1000000 {
+            map.insert(i, i);
+        }
+    }
+
+    #[test]
+    fn test_hashmap_memory() {
+        let mut map = HashMap::<i32, i32>::new();
+        for i in 0..1000000 {
+            map.insert(i, i);
+        }
+    }
+
+    //#[bench]
+    //fn bench_splashmap_memory(b: &mut Bencher) {
+    //    let mut map = SplashMap::default();
+    //    b.iter(|| {
+    //        trie.get(&last_child)
+    //    });
+    //}
 }

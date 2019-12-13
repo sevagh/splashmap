@@ -8,3 +8,10 @@ edition = "2018"
 
 [dependencies]
 splay = { git = "https://github.com/alexcrichton/splay-rs" }
+
+[dev-dependencies]
+criterion = "0.3"
+
+[[bench]]
+name = "collisions"
+harness = false
