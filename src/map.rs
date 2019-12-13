@@ -1,32 +1,60 @@
 use splay::SplayMap;
-use std::collections::hash_map::DefaultHasher;
+use std::collections::hash_map::RandomState;
 use std::{
     cmp::Ord,
-    hash::{Hash, Hasher},
+    default::Default,
+    hash::{BuildHasher, Hash, Hasher},
 };
 
 const LOAD_FACTOR_HIGH: f32 = 0.75; //grow with this
 const LOAD_FACTOR_LOW: f32 = 0.25; //shrink with this
-const INITIAL_SIZE: usize = 16;
+const INITIAL_SIZE: usize = 1;
 
-#[derive(Default)]
-pub struct SplashMap<K, V>
+pub type DefaultHashBuilder = RandomState;
+
+pub struct SplashMap<K, V, S = DefaultHashBuilder>
 where
     K: Ord,
 {
     buckets: Vec<Option<SplayMap<K, V>>>,
     num_entries: usize,
+    hash_builder: S,
 }
 
-impl<K, V> SplashMap<K, V>
+fn make_hash<K: Hash + ?Sized>(hash_builder: &impl BuildHasher, val: &K) -> u64 {
+    let mut state = hash_builder.build_hasher();
+    val.hash(&mut state);
+    state.finish()
+}
+
+impl<K, V> Default for SplashMap<K, V, DefaultHashBuilder>
 where
     K: Hash + Ord,
 {
-    pub fn new() -> SplashMap<K, V> {
-        SplashMap::<K, V>::with_capacity(INITIAL_SIZE)
+    fn default() -> Self {
+        SplashMap::<K, V>::new()
+    }
+}
+
+impl<K, V> SplashMap<K, V, DefaultHashBuilder>
+where
+    K: Hash + Ord,
+{
+    pub fn new() -> Self {
+        SplashMap::<K, V>::with_capacity_and_hasher(INITIAL_SIZE, DefaultHashBuilder::default())
     }
 
-    pub fn with_capacity(capacity: usize) -> SplashMap<K, V> {
+    pub fn with_capacity(capacity: usize) -> Self {
+        SplashMap::<K, V>::with_capacity_and_hasher(capacity, DefaultHashBuilder::default())
+    }
+}
+
+impl<K, V, S> SplashMap<K, V, S>
+where
+    K: Hash + Ord,
+    S: BuildHasher,
+{
+    pub fn with_capacity_and_hasher(capacity: usize, hash_builder: S) -> Self {
         let mut buckets = Vec::<Option<SplayMap<K, V>>>::with_capacity(capacity);
         for _ in 0..capacity {
             buckets.push(None);
@@ -34,26 +62,8 @@ where
         SplashMap {
             buckets,
             num_entries: 0,
+            hash_builder,
         }
-    }
-
-    pub(crate) fn print_collisions(&self) {
-        for i in 0..self.buckets.len() {
-            match self.buckets[i] {
-                None => println!("Bucket slot {} is empty", i),
-                Some(ref x) => println!(
-                    "Bucket slot {} has {} entries in SplayMap chain",
-                    i,
-                    x.len()
-                ),
-            }
-        }
-    }
-
-    pub fn hash_index(&self, key: &K) -> usize {
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        (hasher.finish() % (self.buckets.len() as u64)) as usize
     }
 
     /// resize the buckets vector and recompute hashes within
@@ -61,7 +71,6 @@ where
         self.buckets.resize_with(new_size, || None);
         let mut displaced_nodes = Vec::<SplayMap<K, V>>::new();
         for i in 0..self.buckets.len() {
-            println!("i is {}, len of buckets is {}", i, self.buckets.len());
             if self.buckets[i].is_some() {
                 // occupied chain
                 self.buckets.push(None);
@@ -74,25 +83,26 @@ where
             // reinsert all the entries of the SplayMap
             // to recompute the hashes with the new buckets size
             for pair in d.into_iter() {
-                self.insert(pair.0, pair.1);
+                self.insert_priv(pair.0, pair.1);
             }
         }
     }
 
-    pub fn insert(&mut self, k: K, v: V) {
-        let idx = self.hash_index(&k);
+    fn insert_priv(&mut self, k: K, v: V) -> usize {
+        // this one doesn't increment
+        let mut ret: usize = 0;
+        let hash = make_hash(&self.hash_builder, &k);
+        let idx = (hash % (self.buckets.len() as u64)) as usize;
         match self.buckets[idx] {
             None => {
-                self.num_entries += 1;
                 let mut s = SplayMap::new();
                 s.insert(k, v);
+                ret = 1;
                 self.buckets[idx] = Some(s);
             }
-            Some(ref mut x) => {
-                let ret = x.insert(k, v);
-                if ret.is_none() {
-                    // https://docs.rs/splay/0.1.8/splay/map/struct.SplayMap.html#method.insert
-                    self.num_entries += 1;
+            Some(ref mut s) => {
+                if s.insert(k, v).is_none() {
+                    ret = 1;
                 }
             }
         }
@@ -102,29 +112,40 @@ where
         if real_load_factor >= LOAD_FACTOR_HIGH {
             self.resize_and_rehash(2 * self.buckets.len());
         }
+        ret
+    }
+
+    pub fn insert(&mut self, k: K, v: V) {
+        self.num_entries += self.insert_priv(k, v);
     }
 
     pub fn remove(&mut self, k: &K) -> Option<V> {
-        let idx = self.hash_index(k);
+        let hash = make_hash(&self.hash_builder, &k);
+        let idx = (hash % (self.buckets.len() as u64)) as usize;
         let mut ret: Option<V> = None;
         match self.buckets[idx] {
             None => return ret,
             Some(ref mut x) => {
-                self.num_entries -= 1;
                 ret = x.remove(k);
+                if ret.is_some() {
+                    self.num_entries -= 1;
+                }
             }
         }
 
         let real_load_factor = self.num_entries as f32 / self.buckets.len() as f32;
 
+        println!("real load factor: {}", real_load_factor);
         if real_load_factor < LOAD_FACTOR_LOW {
+            println!("len buckets: {}", self.buckets.len());
             self.resize_and_rehash(self.buckets.len() / 2);
         }
         ret
     }
 
-    pub fn get(&self, k: K) -> Option<&V> {
-        let idx = self.hash_index(&k);
+    pub fn get(&self, k: &K) -> Option<&V> {
+        let hash = make_hash(&self.hash_builder, &k);
+        let idx = (hash % (self.buckets.len() as u64)) as usize;
         match self.buckets[idx] {
             None => None,
             Some(ref x) => x.get(&k),
@@ -140,7 +161,11 @@ where
     }
 
     pub fn capacity(&self) -> usize {
-        (LOAD_FACTOR_HIGH * (self.buckets.len() as f32)) as usize
+        let ret = (LOAD_FACTOR_HIGH * (self.buckets.len() as f32)) as usize;
+        if ret == 0 {
+            return 1;
+        }
+        ret
     }
 }
 
@@ -150,36 +175,41 @@ mod tests {
     use std::collections::hash_map::HashMap;
 
     #[test]
-    fn test_hash_capacity() {
+    fn test_hash_capacity_grows() {
         let mut sm = SplashMap::new();
-        let mut hm = HashMap::new();
+        assert_eq!(sm.capacity(), 1);
+        let mut cap: usize = 0;
 
-        sm.insert("Hello", "World");
-        hm.insert("Hello", "World");
+        for i in 0..10 {
+            assert_eq!(sm.len(), i);
+            sm.insert(i, "hello");
 
-        println!("SplashMap capacity: {:#?}", sm.capacity());
-        println!("SplashMap len: {:#?}", sm.len());
+            // make sure it's growing
+            assert!(sm.capacity() >= cap);
+            cap = sm.capacity();
+        }
+    }
 
-        println!("HashMap capacity: {:#?}", hm.capacity());
-        println!("HashMap len: {:#?}", hm.len());
+    #[test]
+    fn test_hash_capacity_shrinks() {
+        let mut sm = SplashMap::new();
 
-        sm.insert("Hello", "World2");
-        hm.insert("Hello", "World2");
+        for i in 0..10 {
+            sm.insert(i, i);
+        }
 
-        println!("SplashMap capacity: {:#?}", sm.capacity());
-        println!("SplashMap len: {:#?}", sm.len());
+        assert_eq!(sm.len(), 10);
 
-        println!("HashMap capacity: {:#?}", hm.capacity());
-        println!("HashMap len: {:#?}", hm.len());
+        let mut cap = sm.capacity();
 
-        sm.insert("Hello2", "World2");
-        hm.insert("Hello2", "World2");
-
-        println!("SplashMap capacity: {:#?}", sm.capacity());
-        println!("SplashMap len: {:#?}", sm.len());
-
-        println!("HashMap capacity: {:#?}", hm.capacity());
-        println!("HashMap len: {:#?}", hm.len());
+        for i in 0..10 {
+            assert_eq!(sm.get(&i), Some(&i));
+            assert_eq!(sm.remove(&i), Some(i));
+            assert_eq!(sm.get(&i), None);
+            assert_eq!(sm.remove(&i), None);
+            assert!(sm.capacity() <= cap);
+            cap = sm.capacity();
+        }
     }
 
     #[test]
@@ -189,14 +219,12 @@ mod tests {
         for i in 0..10000 {
             sm.insert(i, i + i);
         }
-
-        sm.print_collisions();
     }
 
     #[test]
     fn test_hash_anything() {
         let mut m = SplashMap::new();
         m.insert("hello", "world");
-        println!("m get: {:#?}", m.get("hello"));
+        println!("m get: {:#?}", m.get(&"hello"));
     }
 }
